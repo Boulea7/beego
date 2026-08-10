@@ -44,6 +44,7 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -128,23 +129,43 @@ func (st *SessionStore) SessionReleaseIfPresent(ctx context.Context, w http.Resp
 
 // Provider mysql session provider
 type Provider struct {
+	lock        sync.RWMutex
 	maxlifetime int64
+	savePath    string
 	db          *sql.DB
 }
 
 // connect to mysql
 func (mp *Provider) connectInit() *sql.DB {
-	return mp.db
+	db, _ := mp.connection()
+	return db
+}
+
+func (mp *Provider) connection() (*sql.DB, int64) {
+	mp.lock.RLock()
+	defer mp.lock.RUnlock()
+	return mp.db, mp.maxlifetime
 }
 
 // SessionInit init mysql session.
 // savepath is the connection string of mysql.
 func (mp *Provider) SessionInit(ctx context.Context, maxlifetime int64, savePath string) error {
+	mp.lock.Lock()
+	defer mp.lock.Unlock()
+	if mp.db != nil {
+		if mp.savePath != savePath {
+			return errors.New("mysql session provider is already initialized with a different configuration")
+		}
+		mp.maxlifetime = maxlifetime
+		return nil
+	}
+
 	db, err := sql.Open("mysql", savePath)
 	if err != nil {
 		return err
 	}
 	mp.maxlifetime = maxlifetime
+	mp.savePath = savePath
 	mp.db = db
 	return nil
 }
@@ -224,8 +245,8 @@ func (mp *Provider) SessionDestroy(ctx context.Context, sid string) error {
 
 // SessionGC delete expired values in mysql session
 func (mp *Provider) SessionGC(context.Context) {
-	c := mp.connectInit()
-	c.Exec("DELETE from "+TableName+" where session_expiry < ?", time.Now().Unix()-mp.maxlifetime)
+	c, maxlifetime := mp.connection()
+	_, _ = c.Exec("DELETE from "+TableName+" where session_expiry < ?", time.Now().Unix()-maxlifetime)
 }
 
 // SessionAll count values in mysql session
