@@ -16,137 +16,22 @@ package postgres
 
 import (
 	"context"
-	"sync"
+	"fmt"
 	"testing"
 )
 
-func TestProviderConnectInitReusesDatabase(t *testing.T) {
-	provider := &Provider{}
-	err := provider.SessionInit(context.Background(), 3600, "host=127.0.0.1 port=5432 user=test dbname=test sslmode=disable")
-	if err != nil {
+func TestProviderUsesPostgreSQLDriver(t *testing.T) {
+	provider := new(Provider)
+	if err := provider.SessionInit(context.Background(), 3600,
+		"host=/nonexistent/beego-session-test user=test dbname=test sslmode=disable"); err != nil {
 		t.Fatalf("SessionInit returned an error: %v", err)
 	}
+	pool := provider.connectInit()
+	t.Cleanup(func() { _ = pool.Close() })
 
-	first := provider.connectInit()
-	t.Cleanup(func() {
-		_ = first.Close()
-	})
-	second := provider.connectInit()
-	if second != first {
-		t.Cleanup(func() {
-			_ = second.Close()
-		})
+	driverType := fmt.Sprintf("%T", pool.Driver())
+	if driverType != "*pq.Driver" {
+		t.Fatalf("database driver = %q; want %q", driverType, "*pq.Driver")
 	}
-
-	if got := first.Stats().OpenConnections; got != 0 {
-		t.Fatalf("SessionInit opened %d physical connections; want 0", got)
-	}
-	if first != second {
-		t.Fatal("connectInit returned different database pools")
-	}
-}
-
-func TestProviderSessionInitReusesDatabase(t *testing.T) {
-	const savePath = "host=127.0.0.1 port=5432 user=test dbname=test sslmode=disable"
-	provider := &Provider{}
-	if err := provider.SessionInit(context.Background(), 3600, savePath); err != nil {
-		t.Fatalf("first SessionInit returned an error: %v", err)
-	}
-
-	first := provider.connectInit()
-	t.Cleanup(func() {
-		_ = first.Close()
-	})
-	if err := provider.SessionInit(context.Background(), 3600, savePath); err != nil {
-		t.Fatalf("second SessionInit returned an error: %v", err)
-	}
-	second := provider.connectInit()
-	if second != first {
-		t.Cleanup(func() {
-			_ = second.Close()
-		})
-		t.Fatal("SessionInit replaced the database pool for the same configuration")
-	}
-
-	if err := provider.SessionInit(context.Background(), 7200, savePath); err != nil {
-		t.Fatalf("SessionInit with a new maximum lifetime returned an error: %v", err)
-	}
-	if current := provider.connectInit(); current != first {
-		t.Cleanup(func() {
-			_ = current.Close()
-		})
-		t.Error("SessionInit replaced the database pool when only the maximum lifetime changed")
-	}
-	if _, got := provider.state.DBAndMaxLifetime(); got != 7200 {
-		t.Errorf("maximum lifetime = %d; want 7200", got)
-	}
-}
-
-func TestProviderSessionInitRejectsSavePathChanges(t *testing.T) {
-	const savePath = "host=127.0.0.1 port=5432 user=test dbname=test sslmode=disable"
-	provider := &Provider{}
-	if err := provider.SessionInit(context.Background(), 3600, savePath); err != nil {
-		t.Fatalf("first SessionInit returned an error: %v", err)
-	}
-
-	first := provider.connectInit()
-	t.Cleanup(func() {
-		_ = first.Close()
-	})
-	err := provider.SessionInit(context.Background(), 3600, "host=127.0.0.1 port=5433 user=test dbname=test sslmode=disable")
-	second := provider.connectInit()
-	if second != first {
-		t.Cleanup(func() {
-			_ = second.Close()
-		})
-	}
-
-	if err == nil {
-		t.Error("SessionInit accepted a different save path")
-	} else if got, want := err.Error(), "postgres session provider is already initialized with a different configuration"; got != want {
-		t.Errorf("SessionInit error = %q; want %q", got, want)
-	}
-	if second != first {
-		t.Error("SessionInit replaced the database pool after rejecting a different save path")
-	}
-}
-
-func TestProviderConcurrentSessionInitAndGC(t *testing.T) {
-	const (
-		iterations  = 25
-		maxlifetime = int64(3600)
-		savePath    = "host=/nonexistent/beego-session-test user=test dbname=test sslmode=disable"
-	)
-	provider := &Provider{}
-	if err := provider.SessionInit(context.Background(), maxlifetime, savePath); err != nil {
-		t.Fatalf("SessionInit returned an error: %v", err)
-	}
-	db := provider.connectInit()
-	t.Cleanup(func() {
-		_ = db.Close()
-	})
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < iterations; i++ {
-			lifetime := maxlifetime + int64(i%2)
-			if err := provider.SessionInit(context.Background(), lifetime, savePath); err != nil {
-				t.Errorf("SessionInit returned an error: %v", err)
-				return
-			}
-			if current := provider.connectInit(); current != db {
-				_ = current.Close()
-				t.Error("SessionInit replaced the database pool")
-			}
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		for i := 0; i < iterations; i++ {
-			provider.SessionGC(context.Background())
-		}
-	}()
-	wg.Wait()
+	provider.SessionGC(context.Background())
 }

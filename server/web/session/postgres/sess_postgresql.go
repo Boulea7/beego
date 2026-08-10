@@ -143,7 +143,7 @@ func (mp *Provider) connectInit() *sql.DB {
 // SessionInit init postgresql session.
 // savepath is the connection string of postgresql.
 func (mp *Provider) SessionInit(ctx context.Context, maxlifetime int64, savePath string) error {
-	return mp.state.Init("postgres", "postgres", maxlifetime, savePath)
+	return mp.state.Init("postgres", "postgresql", maxlifetime, savePath)
 }
 
 // SessionRead get postgresql session by sid

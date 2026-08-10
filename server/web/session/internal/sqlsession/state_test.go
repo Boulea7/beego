@@ -32,6 +32,9 @@ func TestPoolStateReusesDatabaseAndUpdatesLifetime(t *testing.T) {
 	t.Cleanup(func() {
 		_ = first.Close()
 	})
+	if got := first.Stats().OpenConnections; got != 0 {
+		t.Fatalf("Init opened %d physical connections; want 0", got)
+	}
 
 	if err := state.Init("mysql", "test", 7200, savePath); err != nil {
 		t.Fatalf("second Init returned an error: %v", err)
