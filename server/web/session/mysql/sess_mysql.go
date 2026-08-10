@@ -110,7 +110,6 @@ func (st *SessionStore) SessionID(context.Context) string {
 // SessionRelease save mysql session values to database.
 // must call this method to save values to database.
 func (st *SessionStore) SessionRelease(_ context.Context, _ http.ResponseWriter) {
-	defer st.c.Close()
 	st.lock.RLock()
 	values := st.values
 	st.lock.RUnlock()
@@ -130,23 +129,23 @@ func (st *SessionStore) SessionReleaseIfPresent(ctx context.Context, w http.Resp
 // Provider mysql session provider
 type Provider struct {
 	maxlifetime int64
-	savePath    string
+	db          *sql.DB
 }
 
 // connect to mysql
 func (mp *Provider) connectInit() *sql.DB {
-	db, e := sql.Open("mysql", mp.savePath)
-	if e != nil {
-		return nil
-	}
-	return db
+	return mp.db
 }
 
 // SessionInit init mysql session.
 // savepath is the connection string of mysql.
 func (mp *Provider) SessionInit(ctx context.Context, maxlifetime int64, savePath string) error {
+	db, err := sql.Open("mysql", savePath)
+	if err != nil {
+		return err
+	}
 	mp.maxlifetime = maxlifetime
-	mp.savePath = savePath
+	mp.db = db
 	return nil
 }
 
@@ -178,7 +177,6 @@ func (mp *Provider) SessionRead(ctx context.Context, sid string) (session.Store,
 // SessionExist check mysql session exist
 func (mp *Provider) SessionExist(ctx context.Context, sid string) (bool, error) {
 	c := mp.connectInit()
-	defer c.Close()
 	row := c.QueryRow("select session_data from "+TableName+" where session_key=?", sid)
 	var sessiondata []byte
 	err := row.Scan(&sessiondata)
@@ -221,7 +219,6 @@ func (mp *Provider) SessionRegenerate(ctx context.Context, oldsid, sid string) (
 func (mp *Provider) SessionDestroy(ctx context.Context, sid string) error {
 	c := mp.connectInit()
 	c.Exec("DELETE FROM "+TableName+" where session_key=?", sid)
-	c.Close()
 	return nil
 }
 
@@ -229,13 +226,11 @@ func (mp *Provider) SessionDestroy(ctx context.Context, sid string) error {
 func (mp *Provider) SessionGC(context.Context) {
 	c := mp.connectInit()
 	c.Exec("DELETE from "+TableName+" where session_expiry < ?", time.Now().Unix()-mp.maxlifetime)
-	c.Close()
 }
 
 // SessionAll count values in mysql session
 func (mp *Provider) SessionAll(context.Context) int {
 	c := mp.connectInit()
-	defer c.Close()
 	var total int
 	err := c.QueryRow("SELECT count(*) as num from " + TableName).Scan(&total)
 	if err != nil {
