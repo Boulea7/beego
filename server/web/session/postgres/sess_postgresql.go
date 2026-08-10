@@ -51,7 +51,6 @@ package postgres
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -59,6 +58,7 @@ import (
 	_ "github.com/lib/pq"
 
 	"github.com/beego/beego/v2/server/web/session"
+	"github.com/beego/beego/v2/server/web/session/internal/sqlsession"
 )
 
 var postgresqlpder = &Provider{}
@@ -132,45 +132,18 @@ func (st *SessionStore) SessionReleaseIfPresent(ctx context.Context, w http.Resp
 
 // Provider postgresql session provider
 type Provider struct {
-	lock        sync.RWMutex
-	maxlifetime int64
-	savePath    string
-	db          *sql.DB
+	state sqlsession.PoolState
 }
 
 // connect to postgresql
 func (mp *Provider) connectInit() *sql.DB {
-	db, _ := mp.connection()
-	return db
-}
-
-func (mp *Provider) connection() (*sql.DB, int64) {
-	mp.lock.RLock()
-	defer mp.lock.RUnlock()
-	return mp.db, mp.maxlifetime
+	return mp.state.DB()
 }
 
 // SessionInit init postgresql session.
 // savepath is the connection string of postgresql.
 func (mp *Provider) SessionInit(ctx context.Context, maxlifetime int64, savePath string) error {
-	mp.lock.Lock()
-	defer mp.lock.Unlock()
-	if mp.db != nil {
-		if mp.savePath != savePath {
-			return errors.New("postgres session provider is already initialized with a different configuration")
-		}
-		mp.maxlifetime = maxlifetime
-		return nil
-	}
-
-	db, err := sql.Open("postgres", savePath)
-	if err != nil {
-		return err
-	}
-	mp.maxlifetime = maxlifetime
-	mp.savePath = savePath
-	mp.db = db
-	return nil
+	return mp.state.Init("postgres", "postgres", maxlifetime, savePath)
 }
 
 // SessionRead get postgresql session by sid
@@ -251,7 +224,7 @@ func (mp *Provider) SessionDestroy(ctx context.Context, sid string) error {
 
 // SessionGC delete expired values in postgresql session
 func (mp *Provider) SessionGC(context.Context) {
-	c, maxlifetime := mp.connection()
+	c, maxlifetime := mp.state.DBAndMaxLifetime()
 	_, _ = c.Exec("DELETE from session where EXTRACT(EPOCH FROM (current_timestamp - session_expiry)) > $1", maxlifetime)
 }
 

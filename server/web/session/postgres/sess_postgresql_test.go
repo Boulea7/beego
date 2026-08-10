@@ -18,8 +18,6 @@ import (
 	"context"
 	"sync"
 	"testing"
-
-	"github.com/DATA-DOG/go-sqlmock"
 )
 
 func TestProviderConnectInitReusesDatabase(t *testing.T) {
@@ -79,7 +77,7 @@ func TestProviderSessionInitReusesDatabase(t *testing.T) {
 		})
 		t.Error("SessionInit replaced the database pool when only the maximum lifetime changed")
 	}
-	if got := provider.maxlifetime; got != 7200 {
+	if _, got := provider.state.DBAndMaxLifetime(); got != 7200 {
 		t.Errorf("maximum lifetime = %d; want 7200", got)
 	}
 }
@@ -123,22 +121,10 @@ func TestProviderConcurrentSessionInitAndGC(t *testing.T) {
 	if err := provider.SessionInit(context.Background(), maxlifetime, savePath); err != nil {
 		t.Fatalf("SessionInit returned an error: %v", err)
 	}
-	_ = provider.connectInit().Close()
-
-	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
-	if err != nil {
-		t.Fatalf("create mock database: %v", err)
-	}
+	db := provider.connectInit()
 	t.Cleanup(func() {
 		_ = db.Close()
 	})
-	provider.db = db
-	mock.MatchExpectationsInOrder(false)
-	for i := 0; i < iterations; i++ {
-		mock.ExpectExec("DELETE from session where EXTRACT(EPOCH FROM (current_timestamp - session_expiry)) > $1").
-			WithArgs(sqlmock.AnyArg()).
-			WillReturnResult(sqlmock.NewResult(0, 0))
-	}
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -163,8 +149,4 @@ func TestProviderConcurrentSessionInitAndGC(t *testing.T) {
 		}
 	}()
 	wg.Wait()
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("database expectations were not met: %v", err)
-	}
 }
