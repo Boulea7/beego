@@ -19,7 +19,7 @@ import (
 	"sync"
 	"testing"
 
-	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/go-sql-driver/mysql" // Register the MySQL driver used by these initialization tests.
 )
 
 func TestPoolStateReusesDatabaseAndUpdatesLifetime(t *testing.T) {
@@ -69,7 +69,7 @@ func TestPoolStateRejectsSavePathChangesWithoutExposingConfiguration(t *testing.
 	if strings.Contains(err.Error(), initialSavePath) || strings.Contains(err.Error(), conflictingSavePath) {
 		t.Fatalf("Init error exposed a database configuration: %q", err)
 	}
-	if current := state.DB(); current != first {
+	if state.DB() != first {
 		t.Fatal("Init replaced the database pool after rejecting a different save path")
 	}
 }
