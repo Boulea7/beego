@@ -26,6 +26,8 @@ import (
 	"github.com/beego/beego/v2/server/web/session"
 )
 
+const operationSessionID = "operation-session"
+
 // ProviderFactory initializes a provider with the supplied sqlmock DSN.
 type ProviderFactory func(dsn string) (session.Provider, *sql.DB, error)
 
@@ -63,7 +65,6 @@ type fixture struct {
 	provider session.Provider
 	mock     sqlmock.Sqlmock
 	queries  Queries
-	ctx      context.Context
 }
 
 // RunStores checks that stores borrow the provider's pool in either release order.
@@ -77,40 +78,41 @@ func RunStores(t *testing.T, factory ProviderFactory, queries Queries) {
 		{"SessionReleaseIfPresent", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			checkStores(t, factory, queries, tc.name, tc.firstIfPresent)
+			ctx := context.Background()
+			checkStores(ctx, t, factory, queries, tc.name, tc.firstIfPresent)
 		})
 	}
 }
 
-func checkStores(t *testing.T, factory ProviderFactory, queries Queries, operation string, firstIfPresent bool) {
+func checkStores(ctx context.Context, t *testing.T, factory ProviderFactory, queries Queries, operation string, firstIfPresent bool) {
 	t.Helper()
 	f := newFixture(t, factory, queries)
-	first := readStore(t, f, "first-store")
-	second := readStore(t, f, "second-store")
-	releaseStore(f, first, "first-store", firstIfPresent)
-	releaseStore(f, second, "second-store", !firstIfPresent)
-	assertPoolReusable(t, f, operation, "after-release")
+	first := readStore(ctx, t, f, "first-store")
+	second := readStore(ctx, t, f, "second-store")
+	releaseStore(ctx, f, first, "first-store", firstIfPresent)
+	releaseStore(ctx, f, second, "second-store", !firstIfPresent)
+	assertPoolReusable(ctx, t, f, operation, "after-release")
 	assertExpectations(t, f.mock)
 }
 
-func readStore(t *testing.T, f *fixture, sid string) session.Store {
+func readStore(ctx context.Context, t *testing.T, f *fixture, sid string) session.Store {
 	t.Helper()
 	expectSessionRow(f, sid)
-	store, err := f.provider.SessionRead(f.ctx, sid)
+	store, err := f.provider.SessionRead(ctx, sid)
 	if err != nil {
 		t.Fatalf("SessionRead(%q) returned an error: %v", sid, err)
 	}
 	return store
 }
 
-func releaseStore(f *fixture, store session.Store, sid string, ifPresent bool) {
+func releaseStore(ctx context.Context, f *fixture, store session.Store, sid string, ifPresent bool) {
 	f.mock.ExpectExec(f.queries.Update).
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sid).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	if ifPresent {
-		store.SessionReleaseIfPresent(f.ctx, nil)
+		store.SessionReleaseIfPresent(ctx, nil)
 	} else {
-		store.SessionRelease(f.ctx, nil)
+		store.SessionRelease(ctx, nil)
 	}
 }
 
@@ -119,7 +121,7 @@ func RunOperations(t *testing.T, factory ProviderFactory, queries Queries) {
 	t.Helper()
 	for _, tc := range []struct {
 		name  string
-		check func(*testing.T, *fixture)
+		check func(context.Context, *testing.T, *fixture)
 	}{
 		{"SessionExist", checkExist},
 		{"SessionDestroy", checkDestroy},
@@ -127,46 +129,47 @@ func RunOperations(t *testing.T, factory ProviderFactory, queries Queries) {
 		{"SessionGC", checkGC},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
 			f := newFixture(t, factory, queries)
-			tc.check(t, f)
-			assertPoolReusable(t, f, tc.name, "after-operation")
+			tc.check(ctx, t, f)
+			assertPoolReusable(ctx, t, f, tc.name, "after-operation")
 			assertExpectations(t, f.mock)
 		})
 	}
 }
 
-func checkExist(t *testing.T, f *fixture) {
+func checkExist(ctx context.Context, t *testing.T, f *fixture) {
 	t.Helper()
-	expectSessionRow(f, "operation-session")
-	exists, err := f.provider.SessionExist(f.ctx, "operation-session")
+	expectSessionRow(f, operationSessionID)
+	exists, err := f.provider.SessionExist(ctx, operationSessionID)
 	if err != nil || !exists {
 		t.Fatalf("SessionExist = (%v, %v); want (true, nil)", exists, err)
 	}
 }
 
-func checkDestroy(t *testing.T, f *fixture) {
+func checkDestroy(ctx context.Context, t *testing.T, f *fixture) {
 	t.Helper()
-	f.mock.ExpectExec(f.queries.Destroy).WithArgs("operation-session").
+	f.mock.ExpectExec(f.queries.Destroy).WithArgs(operationSessionID).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	if err := f.provider.SessionDestroy(f.ctx, "operation-session"); err != nil {
+	if err := f.provider.SessionDestroy(ctx, operationSessionID); err != nil {
 		t.Fatalf("SessionDestroy returned an error: %v", err)
 	}
 }
 
-func checkAll(t *testing.T, f *fixture) {
+func checkAll(ctx context.Context, t *testing.T, f *fixture) {
 	t.Helper()
 	f.mock.ExpectQuery(f.queries.All).
 		WillReturnRows(sqlmock.NewRows([]string{"num"}).AddRow(2)).RowsWillBeClosed()
-	if got := f.provider.SessionAll(f.ctx); got != 2 {
+	if got := f.provider.SessionAll(ctx); got != 2 {
 		t.Fatalf("SessionAll = %d; want 2", got)
 	}
 }
 
-func checkGC(t *testing.T, f *fixture) {
+func checkGC(ctx context.Context, t *testing.T, f *fixture) {
 	t.Helper()
 	f.mock.ExpectExec(f.queries.GC).WithArgs(f.queries.GCArgs...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	f.provider.SessionGC(f.ctx)
+	f.provider.SessionGC(ctx)
 }
 
 func expectSessionRow(f *fixture, sid string) {
@@ -174,10 +177,10 @@ func expectSessionRow(f *fixture, sid string) {
 		WillReturnRows(sqlmock.NewRows([]string{"session_data"}).AddRow([]byte{})).RowsWillBeClosed()
 }
 
-func assertPoolReusable(t *testing.T, f *fixture, operation, sid string) {
+func assertPoolReusable(ctx context.Context, t *testing.T, f *fixture, operation, sid string) {
 	t.Helper()
 	expectSessionRow(f, sid)
-	exists, err := f.provider.SessionExist(f.ctx, sid)
+	exists, err := f.provider.SessionExist(ctx, sid)
 	if err != nil {
 		t.Fatalf("SessionExist after %s returned an error: %v", operation, err)
 	}
@@ -209,7 +212,7 @@ func newFixture(t *testing.T, factory ProviderFactory, queries Queries) *fixture
 	if err := pool.Ping(); err != nil {
 		t.Fatalf("opening provider database: %v", err)
 	}
-	return &fixture{provider: provider, mock: mock, queries: queries, ctx: context.Background()}
+	return &fixture{provider: provider, mock: mock, queries: queries}
 }
 
 func closeMockDB(t *testing.T, mock sqlmock.Sqlmock, db *sql.DB, name string) {
